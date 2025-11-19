@@ -1,4 +1,4 @@
-name: Android CI - Build Debug APK (verbose diagnostics)
+name: Android CI - Build Debug APK (portraitci fixed)
 
 on:
   push:
@@ -9,13 +9,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
+      # Edit these if your compileSdk/build-tools differ
       ANDROID_API_LEVEL: "33"
       ANDROID_BUILD_TOOLS: "33.0.2"
       FALLBACK_GRADLE_VERSION: "8.1.1"
+      # Explicit project dir (this is the scaffold path in your repo)
+      PROJECT_DIR: "portraitci_scaffold/app"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -26,30 +31,7 @@ jobs:
       - name: Install helper packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip wget curl git jq
-        shell: bash
-
-      - name: Detect Gradle project directory
-        id: detect
-        run: |
-          project_dir=$(git ls-files -co --exclude-standard \
-            | grep -E '(^|/)(settings.gradle|settings.gradle.kts|build.gradle|build.gradle.kts)$' \
-            | sed -E 's@/(settings.gradle|settings.gradle.kts|build.gradle|build.gradle.kts)@@' \
-            | head -n1 || true)
-
-          if [ -z "$project_dir" ]; then
-            if [ -f "./settings.gradle" ] || [ -f "./settings.gradle.kts" ] || [ -f "./build.gradle" ] || [ -f "./build.gradle.kts" ]; then
-              project_dir="."
-            fi
-          fi
-
-          if [ -z "$project_dir" ]; then
-            echo "No Gradle build file found in repository. Aborting."
-            exit 1
-          fi
-
-          echo "Found Gradle project at: $project_dir"
-          echo "PROJECT_DIR=$project_dir" >> "$GITHUB_ENV"
+          sudo apt-get install -y unzip wget curl git
         shell: bash
 
       - name: Configure Android SDK and set SDK envs
@@ -76,7 +58,7 @@ jobs:
           yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null || true
           sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-${ANDROID_API_LEVEL}" "build-tools;${ANDROID_BUILD_TOOLS}"
 
-          # Ensure both variables point to same path to avoid Gradle errors
+          # ensure both envs point to identical path (fixes earlier Gradle error)
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
@@ -84,24 +66,25 @@ jobs:
         shell: bash
         timeout-minutes: 10
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
+      - name: Print debug info (short)
+        run: |
+          echo "PROJECT_DIR=$PROJECT_DIR"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          java -version || true
+          uname -a || true
+        shell: bash
 
-      - name: Ensure Gradle (wrapper or fallback)
+      - name: Ensure Gradle (use wrapper if present, else download)
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
           if [ -f "./gradlew" ]; then
+            echo "Gradle wrapper found, using ./gradlew"
             chmod +x ./gradlew
             echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
           else
+            echo "No gradlew. Downloading Gradle ${FALLBACK_GRADLE_VERSION}"
             GRADLE_ZIP="gradle-${FALLBACK_GRADLE_VERSION}-bin.zip"
             if [ ! -f "$GRADLE_ZIP" ]; then
               wget -q "https://services.gradle.org/distributions/${GRADLE_ZIP}"
@@ -113,44 +96,11 @@ jobs:
           fi
         shell: bash
 
-      - name: Print environment & project files for debugging
-        run: |
-          echo "==== ENVIRONMENT ===="
-          env | sort
-          echo ""
-          echo "==== PROJECT_DIR ===="
-          echo "$PROJECT_DIR"
-          echo ""
-          echo "==== LIST project root files ===="
-          ls -la
-          echo ""
-          echo "==== LIST PROJECT_DIR files ===="
-          ls -la "$PROJECT_DIR"
-          echo ""
-          echo "==== show gradle.properties (if present) ===="
-          if [ -f "$PROJECT_DIR/gradle.properties" ]; then
-            echo "---- gradle.properties ----"
-            sed -n '1,200p' "$PROJECT_DIR/gradle.properties"
-            echo "---------------------------"
-          else
-            echo "no gradle.properties in $PROJECT_DIR"
-          fi
-          echo ""
-          echo "==== show local.properties (if present) ===="
-          if [ -f "$PROJECT_DIR/local.properties" ]; then
-            echo "---- local.properties ----"
-            sed -n '1,200p' "$PROJECT_DIR/local.properties" || true
-            echo "--------------------------"
-          else
-            echo "no local.properties in $PROJECT_DIR"
-          fi
-        shell: bash
-
-      - name: Ensure AndroidX (CI safety)
+      - name: Ensure AndroidX is enabled for project (CI patch)
         run: |
           GP="$PROJECT_DIR/gradle.properties"
           if [ ! -f "$GP" ]; then
-            echo "# created by CI to enable AndroidX" > "$GP"
+            echo "# Created by CI to ensure AndroidX" > "$GP"
           fi
           if ! grep -q '^android.useAndroidX=' "$GP"; then
             echo "android.useAndroidX=true" >> "$GP"
@@ -158,7 +108,7 @@ jobs:
           if ! grep -q '^android.enableJetifier=' "$GP"; then
             echo "android.enableJetifier=true" >> "$GP"
           fi
-          echo "----- gradle.properties tail -----"
+          echo "---- tail gradle.properties ----"
           tail -n 40 "$GP" || true
         shell: bash
 
@@ -167,22 +117,21 @@ jobs:
           set -euo pipefail
           cd "$PROJECT_DIR"
           echo "Running from $(pwd)"
-          echo "Gradle command: ${GRADLE_CMD:-gradle} clean assembleDebug --stacktrace --info --debug"
-          # Run gradle with stacktrace/info/debug so the logs show full reason for failure
           if [ -f "./gradlew" ]; then
-            ./gradlew clean assembleDebug --stacktrace --info --debug --no-daemon
+            ./gradlew clean assembleDebug --no-daemon --stacktrace --info
           else
-            gradle clean assembleDebug --stacktrace --info --debug --no-daemon
+            gradle clean assembleDebug --no-daemon --stacktrace --info
           fi
         shell: bash
-        timeout-minutes: 40
+        timeout-minutes: 30
 
-      - name: List APKs (debug)
+      - name: Find APKs and upload
         run: |
+          echo "Listing produced APKs"
           find . -path "*/build/outputs/apk/debug/*.apk" -print || true
         shell: bash
 
-      - name: Upload APK(s)
+      - name: Upload APK artifact(s)
         uses: actions/upload-artifact@v4
         with:
           name: portraitcamera-apk
