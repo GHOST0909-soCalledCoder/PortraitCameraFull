@@ -5,16 +5,15 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  # path where the workflow will install Android SDK
-  ANDROID_SDK_ROOT: ${{ runner.tool_cache }}/android-sdk
-  # change these if your project needs a different SDK / build-tools
-  ANDROID_API_LEVEL: "33"
-  ANDROID_BUILD_TOOLS: "33.0.2"
-
+# kept minimal at top level; job-level or step-level runtime vars are used instead.
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    env:
+      # change these if your project needs a different SDK / build-tools
+      ANDROID_API_LEVEL: "33"
+      ANDROID_BUILD_TOOLS: "33.0.2"
 
     steps:
       - name: Checkout repository
@@ -33,30 +32,37 @@ jobs:
         shell: bash
 
       - name: Install Android command-line tools & SDK packages
+        # Use RUNNER_TOOL_CACHE which is available as an env var on the runner at runtime.
         run: |
           set -e
-
+          # choose a path inside the runner tool cache so the runner may cache downloads between jobs
+          ANDROID_SDK_ROOT="${RUNNER_TOOL_CACHE}/android-sdk"
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           cd "$ANDROID_SDK_ROOT"
 
-          # download the latest stable command line tools (this URL version may be updated by Google over time)
+          # download a stable command-line tools package (Google's filename may change over time)
           wget -q "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -O cmdline-tools.zip
-          unzip -q cmdline-tools.zip -d cmdline-tools
-          # move into expected folder
+          unzip -q cmdline-tools.zip -d cmdline-tools || true
           mkdir -p cmdline-tools/latest
-          mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
+          # move into expected folder; tolerate errors if structure differs
+          mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
 
-          export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
 
           # Accept licenses and install required SDK packages
           yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses
           sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-${ANDROID_API_LEVEL}" "build-tools;${ANDROID_BUILD_TOOLS}"
+          # export for following steps in this shell session
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
         shell: bash
 
       - name: Ensure Gradle (only used if wrapper missing)
         run: |
           if [ -f "./gradlew" ]; then
             echo "Gradle wrapper found — will use ./gradlew"
+            chmod +x ./gradlew
           else
             echo "No gradle wrapper found — installing gradle via apt"
             sudo apt-get update
@@ -64,7 +70,7 @@ jobs:
           fi
         shell: bash
 
-      - name: Show Java and Gradle info
+      - name: Show Java & Gradle info
         run: |
           java -version
           if [ -f "./gradlew" ]; then
@@ -78,13 +84,11 @@ jobs:
         run: |
           # Use the wrapper if present, otherwise system gradle
           if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
             ./gradlew clean assembleDebug --no-daemon
           else
             gradle clean assembleDebug --no-daemon
           fi
         shell: bash
-        # increase timeout for large projects if needed:
         timeout-minutes: 20
 
       - name: Upload APK artifact
