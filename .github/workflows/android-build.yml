@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -19,12 +18,20 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Run Gradle build (install Gradle automatically)
-        working-directory: ./PortraitCameraFull     # MUST BE BEFORE "uses"
-        uses: gradle/gradle-build-action@v2
-        with:
-          gradle-version: '8.1.1'
-          arguments: clean assembleDebug
+      - name: Download Gradle 8.1.1
+        run: |
+          echo "Downloading Gradle 8.1.1..."
+          curl -sSLo gradle-8.1.1-bin.zip https://services.gradle.org/distributions/gradle-8.1.1-bin.zip
+          unzip -q gradle-8.1.1-bin.zip -d gradle
+          ls -la gradle
+        shell: bash
+
+      - name: Build debug APK
+        run: |
+          echo "Running Gradle to build debug APK..."
+          # run Gradle from downloaded distribution and point it at nested project folder
+          ./gradle/gradle-8.1.1/bin/gradle -p PortraitCameraFull clean assembleDebug --no-daemon
+        shell: bash
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
