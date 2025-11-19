@@ -1,4 +1,4 @@
-name: Build Debug APK
+name: Build Debug APK (auto-detect project)
 
 on:
   push:
@@ -18,23 +18,44 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Download Gradle 8.1.1
+      - name: List repository root (debug)
         run: |
-          echo "Downloading Gradle 8.1.1..."
-          curl -sSLo gradle-8.1.1-bin.zip https://services.gradle.org/distributions/gradle-8.1.1-bin.zip
-          unzip -q gradle-8.1.1-bin.zip -d gradle
-          ls -la gradle
+          echo "Repo contents:"
+          ls -la
+          echo "Searching for settings.gradle..."
+          find . -maxdepth 4 -type f -name 'settings.gradle' -print || true
         shell: bash
 
-      - name: Build debug APK
+      - name: Download Gradle 8.1.1
         run: |
-          echo "Running Gradle to build debug APK..."
-          # run Gradle from downloaded distribution and point it at nested project folder
-          ./gradle/gradle-8.1.1/bin/gradle -p PortraitCameraFull clean assembleDebug --no-daemon
+          curl -sSLo gradle-8.1.1-bin.zip https://services.gradle.org/distributions/gradle-8.1.1-bin.zip
+          unzip -q gradle-8.1.1-bin.zip -d gradle
+        shell: bash
+
+      - name: Find project directory (where settings.gradle lives)
+        id: findproj
+        run: |
+          proj_file=$(find . -maxdepth 4 -type f -name 'settings.gradle' -print -quit)
+          if [ -z "$proj_file" ]; then
+            echo "No settings.gradle found in repository (within 4 levels). Exiting."
+            exit 2
+          fi
+          proj_dir=$(dirname "$proj_file")
+          # normalize path to remove leading ./ 
+          proj_dir=${proj_dir#./}
+          echo "Found project dir: $proj_dir"
+          echo "proj_dir=$proj_dir" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Build debug APK with Gradle
+        run: |
+          echo "Using Gradle from: ./gradle/gradle-8.1.1/bin/gradle"
+          echo "Project dir: ${{ steps.findproj.outputs.proj_dir }}"
+          ./gradle/gradle-8.1.1/bin/gradle -p "${{ steps.findproj.outputs.proj_dir }}" clean assembleDebug --no-daemon
         shell: bash
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
-          path: PortraitCameraFull/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ steps.findproj.outputs.proj_dir }}/app/build/outputs/apk/debug/app-debug.apk
