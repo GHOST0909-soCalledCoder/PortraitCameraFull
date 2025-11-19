@@ -1,0 +1,96 @@
+name: Android CI - Build Debug APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  # path where the workflow will install Android SDK
+  ANDROID_SDK_ROOT: ${{ runner.tool_cache }}/android-sdk
+  # change these if your project needs a different SDK / build-tools
+  ANDROID_API_LEVEL: "33"
+  ANDROID_BUILD_TOOLS: "33.0.2"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install basic tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip wget git
+        shell: bash
+
+      - name: Install Android command-line tools & SDK packages
+        run: |
+          set -e
+
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          cd "$ANDROID_SDK_ROOT"
+
+          # download the latest stable command line tools (this URL version may be updated by Google over time)
+          wget -q "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -O cmdline-tools.zip
+          unzip -q cmdline-tools.zip -d cmdline-tools
+          # move into expected folder
+          mkdir -p cmdline-tools/latest
+          mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
+
+          export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
+
+          # Accept licenses and install required SDK packages
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-${ANDROID_API_LEVEL}" "build-tools;${ANDROID_BUILD_TOOLS}"
+        shell: bash
+
+      - name: Ensure Gradle (only used if wrapper missing)
+        run: |
+          if [ -f "./gradlew" ]; then
+            echo "Gradle wrapper found — will use ./gradlew"
+          else
+            echo "No gradle wrapper found — installing gradle via apt"
+            sudo apt-get update
+            sudo apt-get install -y gradle
+          fi
+        shell: bash
+
+      - name: Show Java and Gradle info
+        run: |
+          java -version
+          if [ -f "./gradlew" ]; then
+            ./gradlew -v
+          else
+            gradle -v
+          fi
+        shell: bash
+
+      - name: Build Debug APK
+        run: |
+          # Use the wrapper if present, otherwise system gradle
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew clean assembleDebug --no-daemon
+          else
+            gradle clean assembleDebug --no-daemon
+          fi
+        shell: bash
+        # increase timeout for large projects if needed:
+        timeout-minutes: 20
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portraitcamera-apk
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            **/build/outputs/apk/debug/*.apk
