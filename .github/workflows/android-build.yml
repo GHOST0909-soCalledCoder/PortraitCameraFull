@@ -19,9 +19,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Run Gradle build (uses Gradle Action to install Gradle)
+      - name: Run Gradle build (install Gradle automatically)
         uses: gradle/gradle-build-action@v2
         with:
+          gradle-version: '8.1.1'
           arguments: clean assembleDebug
 
       - name: Upload APK artifact
