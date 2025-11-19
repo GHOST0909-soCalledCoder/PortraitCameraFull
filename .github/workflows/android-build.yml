@@ -24,9 +24,12 @@ jobs:
         with:
           gradle-version: '8.1.1'
           arguments: clean assembleDebug
+        # run inside the nested project folder where your settings.gradle lives
+        working-directory: ./PortraitCameraFull
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          # path to the APK inside the nested project
+          path: PortraitCameraFull/app/build/outputs/apk/debug/app-debug.apk
