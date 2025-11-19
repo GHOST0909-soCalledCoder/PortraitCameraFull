@@ -1,4 +1,4 @@
-name: Android CI - Build Debug APK
+name: Android CI - Build Debug APK (auto-detect project dir)
 
 on:
   push:
@@ -9,10 +9,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # change these if your project requires different values
       ANDROID_API_LEVEL: "33"
       ANDROID_BUILD_TOOLS: "33.0.2"
-      # Gradle to download if wrapper not present
       FALLBACK_GRADLE_VERSION: "8.1.1"
 
     steps:
@@ -31,36 +29,56 @@ jobs:
           sudo apt-get install -y unzip wget curl git
         shell: bash
 
+      - name: Detect Gradle project directory
+        id: detect
+        run: |
+          # Find first directory that contains settings.gradle(.kts) or build.gradle(.kts)
+          project_dir=$(git ls-files -co --exclude-standard \
+            | grep -E '(^|/)(settings.gradle|settings.gradle.kts|build.gradle|build.gradle.kts)$' \
+            | sed -E 's@/(settings.gradle|settings.gradle.kts|build.gradle|build.gradle.kts)@@' \
+            | head -n1 || true)
+
+          # If file is at repo root, sed returns empty string -> set to "."
+          if [ -z "$project_dir" ]; then
+            # check if root has build files
+            if [ -f "./settings.gradle" ] || [ -f "./settings.gradle.kts" ] || [ -f "./build.gradle" ] || [ -f "./build.gradle.kts" ]; then
+              project_dir="."
+            fi
+          fi
+
+          if [ -z "$project_dir" ]; then
+            echo "No Gradle build file found in repository. Aborting."
+            echo "searched for: settings.gradle settings.gradle.kts build.gradle build.gradle.kts"
+            exit 1
+          fi
+
+          echo "Found Gradle project at: $project_dir"
+          echo "PROJECT_DIR=$project_dir" >> "$GITHUB_ENV"
+        shell: bash
+
       - name: Configure Android SDK (commandline tools + packages)
         run: |
           set -euo pipefail
-
-          # Use the runner cache area at runtime
           ANDROID_SDK_ROOT="${RUNNER_TOOL_CACHE}/android-sdk"
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           cd "$ANDROID_SDK_ROOT"
 
-          # Download Google's command-line tools (versioned file name may change in future)
           CMDLINE_ZIP="commandlinetools-linux-9477386_latest.zip"
           if [ ! -f "$CMDLINE_ZIP" ]; then
             wget -q "https://dl.google.com/android/repository/${CMDLINE_ZIP}" -O "$CMDLINE_ZIP"
           fi
           unzip -o -q "$CMDLINE_ZIP" -d cmdline-tools || true
           mkdir -p cmdline-tools/latest
-          # tolerate different internal layouts
           if [ -d cmdline-tools/cmdline-tools ]; then
-            mv -f cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
+            mv -f cmdline-tools/cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
           else
             mv -f cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true || true
           fi
 
           export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
-
-          # Accept licenses and install packages
           yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null || true
           sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-${ANDROID_API_LEVEL}" "build-tools;${ANDROID_BUILD_TOOLS}"
 
-          # Make Android SDK available to other steps
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
@@ -77,15 +95,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Ensure Gradle (use wrapper if available, otherwise download)
+      - name: Ensure Gradle (wrapper or fallback)
         run: |
           set -euo pipefail
+          cd "$PROJECT_DIR"
           if [ -f "./gradlew" ]; then
-            echo "Using Gradle wrapper from repo"
+            echo "Using Gradle wrapper from $PROJECT_DIR"
             chmod +x ./gradlew
-            GRADLE_CMD="./gradlew"
+            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
           else
-            echo "No Gradle wrapper found. Downloading Gradle ${FALLBACK_GRADLE_VERSION} to use."
+            echo "No Gradle wrapper found in $PROJECT_DIR. Downloading Gradle ${FALLBACK_GRADLE_VERSION}."
             GRADLE_ZIP="gradle-${FALLBACK_GRADLE_VERSION}-bin.zip"
             if [ ! -f "$GRADLE_ZIP" ]; then
               wget -q "https://services.gradle.org/distributions/${GRADLE_ZIP}"
@@ -94,37 +113,45 @@ jobs:
             unzip -o -q "$GRADLE_ZIP" -d "$HOME/gradle"
             export GRADLE_HOME="$HOME/gradle/gradle-${FALLBACK_GRADLE_VERSION}"
             echo "$GRADLE_HOME/bin" >> "$GITHUB_PATH"
-            GRADLE_CMD="gradle"
+            echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
           fi
-          echo "GRADLE_CMD=${GRADLE_CMD}" >> "$GITHUB_ENV"
         shell: bash
 
-      - name: Show Java & Gradle version
+      - name: Show Java & Gradle info
         run: |
+          echo "PROJECT_DIR=$PROJECT_DIR"
           java -version
-          if [ -f "./gradlew" ]; then
-            ./gradlew -v
+          if [ -f "$PROJECT_DIR/gradlew" ]; then
+            (cd "$PROJECT_DIR" && ./gradlew -v)
           else
             gradle -v
           fi
         shell: bash
 
-      - name: Build debug APK
+      - name: Build debug APK (in detected project dir)
         run: |
           set -euo pipefail
-          # Use wrapper if present, else the downloaded gradle
+          echo "Building in PROJECT_DIR=$PROJECT_DIR"
+          cd "$PROJECT_DIR"
           if [ -f "./gradlew" ]; then
             ./gradlew clean assembleDebug --no-daemon
           else
             gradle clean assembleDebug --no-daemon
           fi
         shell: bash
-        timeout-minutes: 20
+        timeout-minutes: 30
 
-      - name: Upload APK artifact
+      - name: Show any built APKs
+        run: |
+          # list anything under build/outputs/apk
+          echo "Listing APKs produced:"
+          find . -path "*/build/outputs/apk/*.apk" -o -path "*/build/outputs/apk/**/*.apk" -print || true
+        shell: bash
+
+      - name: Upload APK artifact(s)
         uses: actions/upload-artifact@v4
         with:
           name: portraitcamera-apk
           path: |
-            app/build/outputs/apk/debug/*.apk
             **/build/outputs/apk/debug/*.apk
+            **/build/outputs/apk/debug/**/*.apk
